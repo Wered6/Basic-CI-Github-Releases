@@ -1,0 +1,57 @@
+#!/bin/bash
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+cd "$PROJECT_ROOT" || exit 1
+
+# Check current branch
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "dev" ]]; then
+    echo "⏭️  Skipping release — not on 'main' or 'dev' branch (currently on '$CURRENT_BRANCH')"
+    exit 0
+fi
+
+# Read refs from stdin (provided by Git pre-push hook)
+while read local_ref local_sha remote_ref remote_sha; do
+    echo "🔍 Checking diff between $remote_sha and $local_sha..."
+
+    if [[ "$remote_sha" =~ ^0+$ ]]; then
+        RANGE="$local_sha"
+    else
+        RANGE="$remote_sha..$local_sha"
+    fi
+
+    # Check for C++ changes in the pushed range
+    if git diff --name-only "$RANGE" | grep -E '\.(cpp|h)$' > /dev/null; then
+        echo "🔧 Detected C++ file changes — preparing release..."
+
+        # Get last commit message
+        COMMIT_MSG=$(git log -1 --pretty=%s)
+
+	      # Sanitize commit message to create safe tag name
+        SAFE_COMMIT_TAG=$(echo "$COMMIT_MSG" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd '[:alnum:]-')
+
+        # Get current date-time (format: YYYYMMDD-HHMMSS)
+        TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+
+        # Construct tag name
+        TAG_NAME="release-${SAFE_COMMIT_TAG:0:30}-${TIMESTAMP}"
+
+        BINARY_ZIP_NAME="Binaries.zip"
+        RELEASE_TITLE="$COMMIT_MSG"
+        RELEASE_BODY="Auto release triggered by commit: $COMMIT_MSG"
+
+        echo "📦 Zipping Binaries (PowerShell)..."
+        powershell.exe -Command "Compress-Archive -Path 'Binaries/Win64' -DestinationPath '$BINARY_ZIP_NAME' -Force"
+
+        echo "🏷️  Tagging commit with $TAG_NAME..."
+        git tag -a "$TAG_NAME" -m "$RELEASE_TITLE"
+        git push origin "$TAG_NAME"
+
+        echo "🚀 Creating GitHub Release..."
+        gh release create "$TAG_NAME" "$BINARY_ZIP_NAME" --title "$RELEASE_TITLE" --notes "$RELEASE_BODY"
+
+        echo "✅ Release published: $RELEASE_TITLE"
+    else
+        echo "📁 No C++ changes detected — skipping release."
+    fi
+done
